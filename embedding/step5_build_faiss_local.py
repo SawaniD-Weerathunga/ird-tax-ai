@@ -36,7 +36,7 @@ def main():
 
     # 2) Load local embedding model
     print(f"Loading model: {MODEL_NAME}")
-    model = SentenceTransformer(MODEL_NAME)
+    model = SentenceTransformer("models/all-MiniLM-L6-v2")
 
     # 3) Create embeddings
     print("Creating embeddings locally...")

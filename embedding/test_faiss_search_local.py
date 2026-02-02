@@ -14,7 +14,8 @@ def l2_normalize(vectors: np.ndarray) -> np.ndarray:
 
 def main():
     # Load model
-    model = SentenceTransformer(MODEL_NAME)
+    model = SentenceTransformer("models/all-MiniLM-L6-v2")
+
 
     # Load FAISS + metadata
     index = faiss.read_index(INDEX_PATH)

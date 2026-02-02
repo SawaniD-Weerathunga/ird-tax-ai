@@ -1,5 +1,12 @@
-.env
+
+# Local ML models (very large)
+models/
+
+# Vector database artifacts
 vectorstore/
 
-test_key.py
+# Environment files
+.env
 
+# Test files
+test_key.py
