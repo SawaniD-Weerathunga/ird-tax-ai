@@ -13,26 +13,25 @@ def tokenize(text: str) -> List[str]:
     toks = [t for t in text.split() if t and t not in STOPWORDS]
     return toks
 
-def doc_priority(doc_name: str) -> int:
+def doc_priority(doc_name: str) -> float:
     """
-    Higher = better.
-    Tune this based on your project needs.
+    Return a SMALL float boost (0.0 to ~0.6).
+    This avoids overpowering semantic relevance.
     """
-    d = doc_name.lower()
+    d = (doc_name or "").lower()
 
-    # PN notice should win for amendment/relief questions
+    # Highest priority: Public Notices
     if d.startswith("pn_") or "pn_it" in d or "public notice" in d:
-        return 5
+        return 0.60
 
-    # SET guide is good but not always "official change notice"
+    # Guides / instructions
     if "set_" in d or "statement of estimated tax" in d:
-        return 3
+        return 0.25
 
-    # CIT guide generally lower priority for personal relief
     if "cit" in d or "asmt_cit" in d:
-        return 2
+        return 0.15
 
-    return 1
+    return 0.0
 
 def keyword_score(query: str, text: str) -> float:
     q_tokens = set(tokenize(query))
@@ -43,10 +42,9 @@ def keyword_score(query: str, text: str) -> float:
 
     overlap = len(q_tokens & t_tokens) / len(q_tokens)
 
-    # extra boosts for important phrases
     boosts = 0.0
     q_low = query.lower()
-    t_low = text.lower()
+    t_low = (text or "").lower()
 
     if "personal relief" in q_low and "personal relief" in t_low:
         boosts += 0.35
@@ -59,23 +57,42 @@ def keyword_score(query: str, text: str) -> float:
 
     return overlap + boosts
 
-def rerank(query: str, candidates: List[Dict], alpha: float = 1.0, beta: float = 0.6, gamma: float = 0.25) -> List[Tuple[float, Dict]]:
+def section_boost(query: str, section: str) -> float:
+    """
+    Small boost if query keywords appear in section/title.
+    """
+    if not section:
+        return 0.0
+    return 0.25 * keyword_score(query, section)
+
+def rerank(
+    query: str,
+    candidates: List[Dict],
+    alpha: float = 1.0,
+    beta: float = 0.6,
+    gamma: float = 1.2,
+    delta: float = 0.25
+) -> List[Tuple[float, Dict]]:
     """
     candidates must include:
-      - 'score' (faiss similarity you printed)
+      - 'score' (faiss similarity)
       - 'document'
       - 'content' or 'preview'
-    We combine:
-      final = alpha*faiss + beta*keyword + gamma*doc_priority
+      - optional 'section'
+
+    final = alpha*faiss + beta*keyword + gamma*doc_priority + delta*section_boost
     """
     reranked = []
     for c in candidates:
         faiss_sim = float(c.get("score", 0.0))
         text = c.get("content") or c.get("preview") or ""
+        section = c.get("section", "")
+
         kw = keyword_score(query, text)
         pr = doc_priority(c.get("document", ""))
+        sb = section_boost(query, section)
 
-        final = alpha * faiss_sim + beta * kw + gamma * pr
+        final = alpha * faiss_sim + beta * kw + gamma * pr + delta * sb
         reranked.append((final, c))
 
     reranked.sort(key=lambda x: x[0], reverse=True)
