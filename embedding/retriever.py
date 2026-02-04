@@ -1,14 +1,21 @@
+# embedding/retriever.py
 import json
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 
-# Optional reranker (if file exists)
+# Optional reranker (works whether you run as module or script)
 try:
-    from rerank_local import rerank
+    # if run as package: python -m ...
+    from .rerank_local import rerank
     HAS_RERANK = True
 except Exception:
-    HAS_RERANK = False
+    try:
+        # if run as script: python embedding/...
+        from rerank_local import rerank
+        HAS_RERANK = True
+    except Exception:
+        HAS_RERANK = False
 
 
 def l2_normalize(vectors: np.ndarray) -> np.ndarray:
@@ -38,7 +45,7 @@ class Retriever:
         self.model_path = model_path
         self.use_rerank = use_rerank and HAS_RERANK
 
-        # Load model (local path)
+        # Load embedding model (local path)
         self.model = SentenceTransformer(self.model_path)
 
         # Load FAISS index
@@ -48,14 +55,40 @@ class Retriever:
         with open(self.meta_path, "r", encoding="utf-8") as f:
             self.meta = json.load(f)
 
-    def retrieve(self, query: str, top_k: int = 5, fetch_k: int = 12):
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 5,
+        fetch_k: int = 12,
+        use_rerank: bool | None = None,
+        **kwargs,
+    ):
         """
+        Compatible with many callers:
+        - supports retrieve(query, top_k=5)
+        - supports retrieve(query, k=5)  (we map k -> top_k)
+        - supports retrieve(query, use_rerank=True/False)
+
         fetch_k = how many to pull from FAISS before reranking
         top_k   = final number returned
         """
+
+        # --- Compatibility: allow k=... ---
+        if "k" in kwargs and kwargs["k"] is not None:
+            top_k = int(kwargs["k"])
+
+        # If caller passed use_rerank explicitly, obey it; otherwise use class default
+        if use_rerank is None:
+            use_rerank = self.use_rerank
+        else:
+            use_rerank = bool(use_rerank) and HAS_RERANK
+
         query = (query or "").strip()
         if not query:
             return []
+
+        top_k = int(top_k)
+        fetch_k = int(max(fetch_k, top_k))
 
         # Embed query
         qvec = self.model.encode([query], convert_to_numpy=True).astype("float32")
@@ -78,10 +111,15 @@ class Retriever:
                 "content": item.get("content", ""),
             })
 
-        # Optional rerank (recommended)
-        if self.use_rerank:
-            reranked = rerank(query, candidates, alpha=1.0, beta=0.6, gamma=0.25, delta=1.2)
-            # rerank returns list of (final_score, item)
+        # Optional rerank
+        if use_rerank and candidates:
+            # Some versions of rerank() may or may not support delta.
+            # We'll try with delta first, then fallback safely.
+            try:
+                reranked = rerank(query, candidates, alpha=1.0, beta=0.6, gamma=0.25, delta=1.2)
+            except TypeError:
+                reranked = rerank(query, candidates, alpha=1.0, beta=0.6, gamma=0.25)
+
             final = []
             for final_score, item in reranked[:top_k]:
                 item2 = dict(item)
@@ -89,5 +127,10 @@ class Retriever:
                 final.append(item2)
             return final
 
-        # If no rerank: return FAISS top_k directly
+        # No rerank: return FAISS top_k directly
         return candidates[:top_k]
+
+    # ✅ Backwards-compatible alias used by your other scripts
+    def search(self, query: str, k: int = 5, use_rerank: bool = True, **kwargs):
+        return self.retrieve(query=query, k=k, use_rerank=use_rerank, **kwargs)
+
