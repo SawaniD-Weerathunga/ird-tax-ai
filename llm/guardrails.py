@@ -1,4 +1,3 @@
-# llm/guardrails.py
 from typing import List, Dict, Tuple
 
 DEFAULT_UNAVAILABLE_MSG = "This information is not available in the provided IRD documents."

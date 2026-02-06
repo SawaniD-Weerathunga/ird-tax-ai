@@ -1,5 +1,3 @@
-# llm/disclaimer.py
-
 DISCLAIMER_TEXT = "This response is based solely on IRD-published documents and is not professional tax advice."
 
 def append_disclaimer(answer: str) -> str:

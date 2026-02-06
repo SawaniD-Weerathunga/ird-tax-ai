@@ -1,5 +1,3 @@
-# embedding/test_retriever.py
-
 from embedding.retriever import Retriever
 from llm.guardrails import classify_retrieval
 
