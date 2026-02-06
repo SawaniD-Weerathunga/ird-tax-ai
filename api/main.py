@@ -11,12 +11,13 @@ from pydantic import BaseModel
 from embedding.retriever import Retriever
 from llm.guardrails import classify_retrieval
 from llm.prompt_builder import build_system_prompt, build_user_prompt
+from llm.disclaimer import append_disclaimer
 
 PDF_DIR = "data/pdfs"
 
 # ---- Ollama settings (can change without code edits)
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")  # change if you pulled a different model
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")  # change to what you have pulled
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120"))
 
 app = FastAPI(title="IRD Tax AI API", version="1.0.0")
@@ -52,6 +53,12 @@ def ensure_dirs():
 
 
 def run_pipeline_rebuild():
+    """
+    Rebuild pipeline:
+      Step 3 -> extract text
+      Step 4 -> chunk
+      Step 5 -> build FAISS
+    """
     cmds = [
         ["python", "ingestion/step3_extract_pdfs.py"],
         ["python", "ingestion/step4_chunker.py"],
@@ -99,8 +106,6 @@ def call_ollama_chat(system_prompt: str, user_prompt: str) -> str:
     r.raise_for_status()
     data = r.json()
 
-    # Ollama chat response format:
-    # { message: { role: "assistant", content: "..." }, ... }
     msg = data.get("message", {}) or {}
     return (msg.get("content") or "").strip()
 
@@ -115,6 +120,9 @@ def root():
 
 @app.post("/upload")
 async def upload_pdfs(files: List[UploadFile] = File(...)):
+    """
+    Upload one or more PDFs to data/pdfs and rebuild index.
+    """
     ensure_dirs()
 
     if not files:
@@ -141,6 +149,12 @@ async def upload_pdfs(files: List[UploadFile] = File(...)):
 
 @app.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest):
+    """
+    Step 6: Retrieve
+    Step 9: Guardrails (missing/ambiguous)
+    Step 8: LLM (optional) with fallback
+    Step 11: Disclaimer appended to EVERY answer/message
+    """
     q = (req.question or "").strip()
     if not q:
         raise HTTPException(status_code=400, detail="Question is empty")
@@ -156,10 +170,8 @@ def query(req: QueryRequest):
 
     # Step 9 guardrails
     status, msg = classify_retrieval(contexts)
-    if status in {"missing", "ambiguous"}:
-        return QueryResponse(answer=msg, sources=[], status=status, used_llm=False)
 
-    # build sources
+    # Build sources (even if missing/ambiguous, keep empty as per your rule)
     sources = [
         SourceItem(
             document=c.get("document", ""),
@@ -169,6 +181,15 @@ def query(req: QueryRequest):
         for c in contexts[: req.top_k]
     ]
 
+    # If missing/ambiguous -> return message (WITH disclaimer)
+    if status in {"missing", "ambiguous"}:
+        return QueryResponse(
+            answer=append_disclaimer(msg),
+            sources=[],
+            status=status,
+            used_llm=False,
+        )
+
     # Step 8: LLM answer (optional)
     if req.use_llm:
         system_prompt = build_system_prompt()
@@ -177,13 +198,21 @@ def query(req: QueryRequest):
         try:
             answer = call_ollama_chat(system_prompt, user_prompt)
             if answer:
-                return QueryResponse(answer=answer, sources=sources, status="ok", used_llm=True)
-        except requests.HTTPError as e:
-            # model missing / endpoint issues => fallback
-            pass
+                return QueryResponse(
+                    answer=append_disclaimer(answer),
+                    sources=sources,
+                    status="ok",
+                    used_llm=True,
+                )
         except Exception:
+            # Any Ollama/model error => fallback safely
             pass
 
-    # fallback: extractive answer
+    # fallback: extractive answer (WITH disclaimer)
     answer = safe_extractive_answer(contexts)
-    return QueryResponse(answer=answer, sources=sources, status="ok", used_llm=False)
+    return QueryResponse(
+        answer=append_disclaimer(answer),
+        sources=sources,
+        status="ok",
+        used_llm=False,
+    )

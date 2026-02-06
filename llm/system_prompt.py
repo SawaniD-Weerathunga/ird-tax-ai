@@ -13,6 +13,9 @@ STRICT RULES:
 6) Keep the answer short and clear.
 7) If the CONTEXT does not contain the answer, respond exactly with: "Unavailable in provided documents."
 8) Every sentence in the answer must end with a citation.
+9) The final line of every answer MUST be:
+“This response is based solely on IRD-published documents and is not professional tax advice.”
+
 
 
 
