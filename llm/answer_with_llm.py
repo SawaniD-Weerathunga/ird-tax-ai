@@ -3,7 +3,7 @@ from llm.prompt_builder import build_system_prompt, build_user_prompt
 from embedding.retriever import Retriever
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "llama3.1:8b-instruct"   # keep your model name
+OLLAMA_MODEL = "llama3.1:8b"   # keep your model name
 
 def call_ollama(system_prompt: str, user_prompt: str) -> str:
     payload = {
