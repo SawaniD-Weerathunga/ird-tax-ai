@@ -10,11 +10,12 @@ This system ingests official IRD PDFs, builds a local vector database, retrieves
 ## 📌 Key Objectives
 
 - Answer tax questions **only using IRD documents**
-- Prevent hallucinations and guessing
+- Prevent hallucinations, guessing, and unsupported inference
 - Detect **missing** and **ambiguous** questions
 - Provide **citations and sources**
 - Append a **mandatory disclaimer** to every response
 - Expose functionality via a **FastAPI API** and **CLI**
+- Ensure deterministic behavior: no guessing, no inferred answers, no external knowledge
 
 ---
 
@@ -226,12 +227,16 @@ This response is based solely on IRD-published documents and is not professional
 | ------------------ | ------------------------------------- |
 | Info not in PDFs   | “Not available in provided documents” |
 | Ambiguous question | Ask user to clarify                   |
+| Low retrieval confidence | Treated as missing (score-based decision) |
 | Valid question     | Answer with citations                 |
 | LLM failure        | Safe extractive fallback              |
 
+**Note:** Missing-answer detection is based on retrieval confidence score thresholds, not real-world tax knowledge.  
+If relevant information is not found with sufficient confidence in the provided IRD documents, the system correctly responds as “not available”.
+
 ---
 
-## ⚠️ Disclaimer (Mandatory)
+## ⚠️ Disclaimer
 
 > **Every response ends with:**
 
