@@ -1,5 +1,5 @@
 
-# 🇱🇰 Intelligent Sri Lanka IRD Tax Intelligence & Compliance Assistant
+# Intelligent Sri Lanka IRD Tax Intelligence & Compliance Assistant
 
 An AI-powered tax information assistant designed to answer Sri Lanka Inland Revenue Department (IRD) tax questions **strictly based on IRD-published documents**, without guessing or hallucinating.
 
@@ -261,17 +261,6 @@ This is enforced at **code level** (Step 11).
 
 ---
 
-## ✅ Assessment Compliance Summary
-
-✔ All required steps completed
-✔ Guardrails implemented
-✔ Disclaimer enforced
-✔ Architecture diagram included
-✔ API + CLI supported
-✔ No hallucination or guessing
-
----
-
 ## 👩‍💻 Author
 
 S.D.Weerathunga
@@ -279,7 +268,7 @@ S.D.Weerathunga
 University of Sri Jayewardenepura
 Sri Lanka 🇱🇰
 
-*GitHub: https://github.com/SawaniD-Weerathunga
-*LinkedIn: https://www.linkedin.com/in/sawani-weerathunga-507a55348/
+* GitHub: https://github.com/SawaniD-Weerathunga
+* LinkedIn: https://www.linkedin.com/in/sawani-weerathunga-507a55348/
 
 ---
