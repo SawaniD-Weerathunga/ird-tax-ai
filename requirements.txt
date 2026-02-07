@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+python-multipart
+requests
+
+sentence-transformers
+faiss-cpu
+
+pypdf
+tqdm
+numpy
+scikit-learn
