@@ -8,6 +8,8 @@
 
 The **IRD Tax Intelligence API** provides a secure, document-grounded interface for querying Sri Lanka Inland Revenue Department (IRD) tax information.
 
+_This API is part of the Intelligent Sri Lanka IRD Tax Intelligence & Compliance Assistant project._
+
 ⚠️ **Important Guarantee**
 All answers are generated **strictly from IRD-published PDF documents**.
 The system **does not guess**, **does not hallucinate**, and **does not use external knowledge**.

@@ -5,6 +5,8 @@ An AI-powered tax information assistant designed to answer Sri Lanka Inland Reve
 
 This system ingests official IRD PDFs, builds a local vector database, retrieves relevant sections, and optionally uses an LLM to generate safe, citation-backed answers with mandatory disclaimers.
 
+> This project includes a fully documented REST API for tax information retrieval.
+
 ---
 
 ## 📌 Key Objectives
