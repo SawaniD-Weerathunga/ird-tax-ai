@@ -23,7 +23,10 @@ This system ingests official IRD PDFs, builds a local vector database, retrieves
 
 ## 🏗️ High-Level Architecture
 
-![Architecture Diagram](C:\Users\user\Desktop\ird-tax-ai\docs\ird-tax-ai.drawio.png)
+<div align="center">
+  <img src="docs\ird-tax-ai.drawio.png" alt="Interactive Dashboard" width="80%" style="border-radius: 10px; border: 1px solid #ddd;">
+</div>
+
 
 **Main Components:**
 
