@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 import re
 import shutil
 import subprocess
@@ -21,6 +22,9 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")  # change to what you ha
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120"))
 
 app = FastAPI(title="IRD Tax AI API", version="1.0.0")
+
+STRICT_MODE = os.getenv("STRICT_MODE", "true").lower() in {"1", "true", "yes", "on"}
+_RETRIEVER: Optional["Retriever"] = None
 
 
 # -----------------------------
@@ -51,6 +55,27 @@ class QueryResponse(BaseModel):
 def ensure_dirs():
     os.makedirs(PDF_DIR, exist_ok=True)
 
+def get_retriever() -> Retriever:
+    """
+    Lazily load and cache the retriever so model + FAISS are loaded once.
+    """
+    global _RETRIEVER
+    if _RETRIEVER is None:
+        _RETRIEVER = Retriever(
+            index_path="vectorstore/faiss.index",
+            meta_path="vectorstore/metadata.json",
+            model_path="models/all-MiniLM-L6-v2",
+            use_rerank=True,
+        )
+    return _RETRIEVER
+
+def get_allowed_documents() -> set[str]:
+    """
+    Allowlist documents based on PDFs present in data/pdfs.
+    """
+    if not os.path.isdir(PDF_DIR):
+        return set()
+    return {f for f in os.listdir(PDF_DIR) if f.lower().endswith(".pdf")}
 
 def run_pipeline_rebuild():
     """
@@ -101,12 +126,70 @@ SL_DOMAIN_TERMS = {
     "cit", "pit", "set", "income tax", "withholding", "apit", "payE".lower(),
     "year of assessment", "yoa"
 }
+DOC_CODE_PATTERN = re.compile(r"\b(pn[/_ ]?it|asmt[_ ]?cit|set[_ ]?\d{2}|\bpn_it_\d{4})\b")
+DOC_QUERY_TERMS = {
+    "document", "guide", "public notice", "notice", "circular", "instruction", "instructions",
+    "form", "return", "schedule"
+}
 
 
 def extract_years(text: str) -> List[str]:
     if not text:
         return []
     return [y.replace(" ", "") for y in YEAR_PATTERN.findall(text)]
+
+def years_in_future(years: List[str], now_year: int | None = None) -> bool:
+    """
+    Return True if any requested year-of-assessment starts in the future.
+    """
+    if not years:
+        return False
+    if now_year is None:
+        now_year = datetime.utcnow().year
+    for y in years:
+        try:
+            start = int(y.split("/")[0])
+            if start > now_year:
+                return True
+        except Exception:
+            continue
+    return False
+def expand_query(query: str) -> str:
+    """
+    Lightweight query expansion to improve retrieval for common IRD phrases.
+    This does not change the user-visible question; it only enriches retrieval.
+    """
+    q = (query or "").strip()
+    if not q:
+        return q
+
+    q_low = q.lower()
+    extra: List[str] = []
+
+    # Tax-type synonyms
+    if "self employment tax" in q_low:
+        extra += ["SET", "statement of estimated tax", "estimated tax payable"]
+    if "corporate income tax" in q_low or "corporate tax" in q_low:
+        extra += ["CIT", "company tax", "tax rates for companies", "corporate income tax"]
+    if "personal income tax" in q_low or "pit" in q_low:
+        extra += ["PIT", "personal income tax"]
+    if "set" in q_low and "self employment tax" not in q_low:
+        extra += ["statement of estimated tax", "estimated tax payable"]
+    if "exemption" in q_low or "exemptions" in q_low:
+        extra += ["exempted income", "excluded income", "reliefs"]
+
+    # Public notice doc code variants
+    if "pn_it_" in q_low or "pn/it" in q_low:
+        extra += ["PN/IT", "public notice"]
+
+    # Year-of-assessment phrasing
+    years = extract_years(q)
+    for y in years:
+        extra += [f"year of assessment {y}", f"Y/A {y}"]
+
+    if not extra:
+        return q
+    return q + " " + " ".join(extra)
 
 
 def contexts_contain_year(contexts: List[Dict[str, Any]], year: str) -> bool:
@@ -163,6 +246,12 @@ def has_citations_block(answer: str) -> bool:
     if not answer:
         return False
     return "Citations:" in answer
+
+
+def strip_citations_block(answer: str) -> str:
+    if not answer or "Citations:" not in answer:
+        return answer or ""
+    return answer.split("Citations:")[0].strip()
 
 
 def normalize_doc_name(name: str) -> str:
@@ -225,6 +314,31 @@ def answer_numbers_supported(answer: str, contexts: List[Dict[str, Any]]) -> boo
     return True
 
 
+def answer_supported_by_context(answer: str, contexts: List[Dict[str, Any]], min_overlap: float = 0.35, min_hits: int = 2) -> bool:
+    """
+    Light lexical support check to reduce non-numeric hallucinations.
+    """
+    if not answer or not contexts:
+        return False
+    ans = _normalize_text(strip_citations_block(answer))
+    if not ans:
+        return False
+    ans_tokens = {t for t in re.split(r"[^a-z0-9/]+", ans) if t and len(t) > 2}
+    if not ans_tokens:
+        return False
+
+    ctx_text = " ".join((c.get("content") or "") for c in contexts)
+    ctx_tokens = {t for t in re.split(r"[^a-z0-9/]+", _normalize_text(ctx_text)) if t and len(t) > 2}
+    if not ctx_tokens:
+        return False
+
+    hits = len(ans_tokens & ctx_tokens)
+    if hits < min_hits:
+        return False
+    overlap = hits / max(len(ans_tokens), 1)
+    return overlap >= min_overlap
+
+
 def format_citations(sources: List[SourceItem], limit: int = 3) -> str:
     items = []
     for s in sources[:limit]:
@@ -255,15 +369,75 @@ def is_ambiguous_query(question: str) -> bool:
     q = _normalize_text(question)
     if not q:
         return False
-    # generic tax rate/relief questions without tax type are ambiguous
+    # generic tax rate/relief questions without clear tax type/year are ambiguous
     generic = any(k in q for k in ["rate", "rates", "relief", "threshold", "slab", "exemption"])
-    has_tax_type = any(k in q for k in ["cit", "corporate", "pit", "personal", "set", "withholding", "apit"])
     has_year = bool(extract_years(q))
-    if generic and not has_tax_type:
-        # if no year too, treat as ambiguous
-        if not has_year:
+
+    # Tax type detection (avoid treating "personal" alone as PIT)
+    has_tax_type = False
+    if "cit" in q or "corporate" in q or "company tax" in q:
+        has_tax_type = True
+    if "pit" in q or "personal income tax" in q:
+        has_tax_type = True
+    if "set" in q or "self employment tax" in q or "statement of estimated tax" in q:
+        has_tax_type = True
+    if "withholding" in q or "apit" in q:
+        has_tax_type = True
+
+    if generic:
+        # Relief/exemption questions should include a year to be safe
+        if ("relief" in q or "exemption" in q) and not has_year:
             return True
+        # Rates/slabs/thresholds require tax type and year
+        if not has_tax_type or not has_year:
+            return True
+
     return False
+
+
+def is_specific_query(question: str) -> bool:
+    """
+    Returns True if the question is clearly scoped (tax type + year or explicit document code).
+    Used to avoid false ambiguous results.
+    """
+    q = _normalize_text(question)
+    if not q:
+        return False
+    has_year = bool(extract_years(q))
+    has_tax_type = any(
+        t in q for t in [
+            "cit", "corporate", "company tax",
+            "pit", "personal income tax",
+            "set", "self employment tax", "statement of estimated tax",
+            "withholding", "apit"
+        ]
+    )
+    has_doc_code = bool(DOC_CODE_PATTERN.search(q))
+    return (has_year and has_tax_type) or has_doc_code
+
+
+def is_document_query(question: str) -> bool:
+    q = _normalize_text(question)
+    if not q:
+        return False
+    if DOC_CODE_PATTERN.search(q):
+        return True
+    return any(term in q for term in DOC_QUERY_TERMS)
+
+
+def detect_tax_type(question: str) -> Optional[str]:
+    q = _normalize_text(question)
+    if not q:
+        return None
+    if "set" in q or "self employment tax" in q or "statement of estimated tax" in q:
+        return "set"
+    if "cit" in q or "corporate" in q or "company tax" in q:
+        return "cit"
+    if "pit" in q or "personal income tax" in q:
+        return "pit"
+    if "withholding" in q or "apit" in q:
+        return "withholding"
+    return None
 
 
 def call_ollama_chat(system_prompt: str, user_prompt: str) -> str:
@@ -328,73 +502,21 @@ async def upload_pdfs(files: List[UploadFile] = File(...)):
 @app.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest):
     """
-    Step 6: Retrieve
-    Step 9: Guardrails (missing/ambiguous)
-    Step 8: LLM (optional) with fallback
-    Step 11: Disclaimer appended to EVERY answer/message
+    Answer a tax question using the local IRD document index, with guardrails and citations.
     """
     q = (req.question or "").strip()
     if not q:
         raise HTTPException(status_code=400, detail="Question is empty")
 
-    retriever = Retriever(
-        index_path="vectorstore/faiss.index",
-        meta_path="vectorstore/metadata.json",
-        model_path="models/all-MiniLM-L6-v2",
-        use_rerank=True,
-    )
+    retriever = get_retriever()
 
-    contexts = retriever.retrieve(query=q, top_k=req.top_k, fetch_k=max(12, req.top_k))
-
-    # Step 9 guardrails
-    status, msg = classify_retrieval(contexts)
-    # If query is specific (tax type/year), don't auto-mark ambiguous on close scores
-    if status == "ambiguous" and not is_ambiguous_query(q):
-        status, msg = "ok", ""
-
-    # Build sources (even if missing/ambiguous, keep empty as per your rule)
-    sources = [
-        SourceItem(
-            document=c.get("document", ""),
-            page_range=c.get("page_range") or [],
-            section=c.get("section"),
-        )
-        for c in contexts[: req.top_k]
-    ]
-
-    # If missing/ambiguous -> return message (WITH disclaimer)
-    if status in {"missing", "ambiguous"}:
-        return QueryResponse(
-            answer=append_disclaimer(msg),
-            sources=[],
-            status=status,
-            used_llm=False,
-        )
-
-    # Year-specific guardrail: if question includes a Y/A but contexts don't, treat as missing
-    years_in_q = extract_years(q)
-    if years_in_q:
-        # If any year mentioned isn't supported by retrieved contexts, return missing
-        if not any(contexts_contain_year(contexts, y) for y in years_in_q):
-            return QueryResponse(
-                answer=append_disclaimer(
-                    "This information is not available for the requested year in the provided IRD documents."
-                ),
-                sources=[],
-                status="missing",
-                used_llm=False,
-        )
-
-    # Ambiguity guardrail based on missing tax type/year
-    if is_ambiguous_query(q):
-        return QueryResponse(
-            answer=append_disclaimer(
-                "Your question may be ambiguous. Please specify the tax type (PIT/CIT/SET) and year of assessment."
-            ),
-            sources=[],
-            status="ambiguous",
-            used_llm=False,
-        )
+    retrieval_q = expand_query(q)
+    fetch_k = max(60, req.top_k * 10)
+    contexts = retriever.retrieve(query=retrieval_q, top_k=req.top_k, fetch_k=fetch_k)
+    # Filter to only PDFs currently available in data/pdfs
+    allowed_docs = get_allowed_documents()
+    if allowed_docs:
+        contexts = [c for c in contexts if (c.get("document") in allowed_docs)]
 
     # Out-of-domain geo guardrail (e.g., Europe VAT)
     if query_mentions_non_domain_geo(q):
@@ -407,8 +529,118 @@ def query(req: QueryRequest):
             used_llm=False,
         )
 
+    years_in_q = extract_years(q)
+    if years_in_q and years_in_future(years_in_q):
+        return QueryResponse(
+            answer=append_disclaimer(
+                "This information is not available for the requested future year in the provided IRD documents."
+            ),
+            sources=[],
+            status="missing",
+            used_llm=False,
+        )
+
+    # Strict ambiguity: require tax type + year for generic rate/relief questions.
+    # Allow tax-type-only questions when the scope is otherwise clear or only one doc exists for that tax type.
+    if STRICT_MODE and not is_specific_query(q) and not is_document_query(q):
+        tax_type = detect_tax_type(q)
+        generic = any(k in _normalize_text(q) for k in ["rate", "rates", "relief", "threshold", "slab", "exemption"])
+
+        if tax_type:
+            # If only one document exists for this tax type, allow without year.
+            if allowed_docs:
+                if tax_type == "set":
+                    set_docs = [d for d in allowed_docs if "set_" in d.lower()]
+                    if len(set_docs) == 1:
+                        pass
+                    elif generic:
+                        return QueryResponse(
+                            answer=append_disclaimer(
+                                "Your question may be ambiguous. Please specify the year of assessment."
+                            ),
+                            sources=[],
+                            status="ambiguous",
+                            used_llm=False,
+                        )
+                elif generic:
+                    return QueryResponse(
+                        answer=append_disclaimer(
+                            "Your question may be ambiguous. Please specify the year of assessment."
+                        ),
+                        sources=[],
+                        status="ambiguous",
+                        used_llm=False,
+                    )
+        else:
+            return QueryResponse(
+                answer=append_disclaimer(
+                    "Your question may be ambiguous. Please specify the tax type (PIT/CIT/SET) and year of assessment."
+                ),
+                sources=[],
+                status="ambiguous",
+                used_llm=False,
+            )
+
+    # Step 9 guardrails
+    status, msg = classify_retrieval(contexts)
+    # If query is specific (tax type/year), don't auto-mark ambiguous on close scores
+    if status == "ambiguous" and is_specific_query(q):
+        status, msg = "ok", ""
+    # Allow document queries to bypass ambiguous if retrieval is decent
+    if status == "ambiguous" and is_document_query(q):
+        status, msg = "ok", ""
+    # If tax type is explicit and only one document exists for that tax type, bypass ambiguous
+    if status == "ambiguous":
+        tax_type = detect_tax_type(q)
+        if tax_type and allowed_docs:
+            if tax_type == "set":
+                set_docs = [d for d in allowed_docs if "set_" in d.lower()]
+                if len(set_docs) == 1:
+                    status, msg = "ok", ""
+
+    # If missing/ambiguous -> return message (WITH disclaimer)
+    if status in {"missing", "ambiguous"}:
+        return QueryResponse(
+            answer=append_disclaimer(msg),
+            sources=[],
+            status=status,
+            used_llm=False,
+        )
+
+    # Year-specific guardrail: if question includes a Y/A but contexts don't, treat as missing
+    if years_in_q:
+        # If any year mentioned isn't supported by retrieved contexts, return missing
+        if not any(contexts_contain_year(contexts, y) for y in years_in_q):
+            # Retry with a more explicit Y/A phrasing before failing
+            retry_q = expand_query(q + " year of assessment")
+            retry_ctx = retriever.retrieve(query=retry_q, top_k=req.top_k, fetch_k=fetch_k)
+            if allowed_docs:
+                retry_ctx = [c for c in retry_ctx if (c.get("document") in allowed_docs)]
+            if any(contexts_contain_year(retry_ctx, y) for y in years_in_q):
+                contexts = retry_ctx
+            else:
+                return QueryResponse(
+                    answer=append_disclaimer(
+                        "This information is not available for the requested year in the provided IRD documents."
+                    ),
+                    sources=[],
+                    status="missing",
+                    used_llm=False,
+                )
+
+    # Ambiguity guardrail based on missing tax type/year
+    if is_ambiguous_query(q):
+        return QueryResponse(
+            answer=append_disclaimer(
+                "Your question may be ambiguous. Please specify the tax type (PIT/CIT/SET) and year of assessment."
+            ),
+            sources=[],
+            status="ambiguous",
+            used_llm=False,
+        )
+
     # Keyword overlap guardrail to reduce false positives from weak retrieval
-    if not has_min_keyword_overlap(q, contexts):
+    if not has_min_keyword_overlap(retrieval_q, contexts):
         return QueryResponse(
             answer=append_disclaimer(
                 "This information is not available in the provided IRD documents."
@@ -417,6 +649,16 @@ def query(req: QueryRequest):
             status="missing",
             used_llm=False,
         )
+
+    # Build sources after any retrieval retries/filters
+    sources = [
+        SourceItem(
+            document=c.get("document", ""),
+            page_range=c.get("page_range") or [],
+            section=c.get("section"),
+        )
+        for c in contexts[: req.top_k]
+    ]
 
     # Step 8: LLM answer (optional)
     if req.use_llm:
@@ -430,6 +672,8 @@ def query(req: QueryRequest):
                     raise ValueError("LLM citations do not match retrieved sources")
                 if not answer_numbers_supported(answer, contexts):
                     raise ValueError("LLM answer contains unsupported numeric claims")
+                if not answer_supported_by_context(answer, contexts):
+                    raise ValueError("LLM answer contains unsupported claims")
                 return QueryResponse(
                     answer=append_disclaimer(answer),
                     sources=sources,
