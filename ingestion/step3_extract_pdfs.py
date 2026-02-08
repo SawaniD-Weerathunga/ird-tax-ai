@@ -1,7 +1,16 @@
 import os
 import json
-import pdfplumber
 import re
+
+# Prefer pdfplumber if available, otherwise fallback to pypdf (already in requirements).
+try:
+    import pdfplumber
+    HAS_PDFPLUMBER = True
+except Exception:
+    HAS_PDFPLUMBER = False
+    pdfplumber = None
+
+from pypdf import PdfReader
 
 PDF_DIR = "data/pdfs"
 OUT_JSON = "data/processed_text/ird_documents.json"
@@ -32,9 +41,21 @@ def main():
 
     for pdf_name in pdf_files:
         pdf_path = os.path.join(PDF_DIR, pdf_name)
+        if HAS_PDFPLUMBER:
+            with pdfplumber.open(pdf_path) as pdf:
+                for i, page in enumerate(pdf.pages, start=1):
+                    text = page.extract_text() or ""
+                    section = detect_section(text)
 
-        with pdfplumber.open(pdf_path) as pdf:
-            for i, page in enumerate(pdf.pages, start=1):
+                    records.append({
+                        "document": pdf_name,
+                        "page": i,
+                        "section": section,
+                        "content": text
+                    })
+        else:
+            reader = PdfReader(pdf_path)
+            for i, page in enumerate(reader.pages, start=1):
                 text = page.extract_text() or ""
                 section = detect_section(text)
 
@@ -48,7 +69,7 @@ def main():
     with open(OUT_JSON, "w", encoding="utf-8") as f:
         json.dump(records, f, ensure_ascii=False, indent=2)
 
-    print(f"✅ Step 3 done. Pages extracted: {len(records)}")
+    print(f"Step 3 done. Pages extracted: {len(records)}")
     print(f"Saved to: {OUT_JSON}")
 
 if __name__ == "__main__":

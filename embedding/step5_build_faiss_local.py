@@ -88,7 +88,7 @@ def main():
         json.dump(config, f, indent=2)
 
     # 9) Print stats
-    print("\n✅ STEP 5 COMPLETE (LOCAL)")
+    print("\nSTEP 5 COMPLETE (LOCAL)")
     print(f"Vectors stored: {len(metadata)}")
     print(f"Vector dim: {dim}")
     print(f"Saved FAISS index: {INDEX_PATH}")

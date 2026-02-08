@@ -46,6 +46,25 @@ def keyword_score(query: str, text: str) -> float:
     q_low = query.lower()
     t_low = (text or "").lower()
 
+    # Tax-type synonym boosts
+    if ("corporate income tax" in q_low or "corporate tax" in q_low or "cit" in q_low) and (
+        "company tax" in t_low or "corporate" in t_low or "cit" in t_low
+    ):
+        boosts += 0.20
+    if ("self employment tax" in q_low or "set" in q_low) and (
+        "statement of estimated tax" in t_low or "estimated tax" in t_low or "set" in t_low
+    ):
+        boosts += 0.20
+    if ("personal income tax" in q_low or "pit" in q_low) and (
+        "personal income tax" in t_low or "pit" in t_low
+    ):
+        boosts += 0.15
+
+    # Year-of-assessment boost
+    for y in re.findall(r"\b20\d{2}\s*/\s*20\d{2}\b", q_low):
+        if y.replace(" ", "") in t_low.replace(" ", ""):
+            boosts += 0.30
+
     if "personal relief" in q_low and "personal relief" in t_low:
         boosts += 0.35
     if "2025/2026" in q_low and "2025/2026" in t_low:
