@@ -274,9 +274,9 @@ This is enforced at **code level** (Step 11).
 ## 👩‍💻 Author
 
 S.D.Weerathunga
->**Computer Engineering Undergraduate**
->University of Sri Jayewardenepura
->Sri Lanka 🇱🇰
+>**Computer Engineering Undergraduate**,
+>University of Sri Jayewardenepura,
+>Sri Lanka 🇱🇰.
 
 * GitHub: https://github.com/SawaniD-Weerathunga
 * LinkedIn: https://www.linkedin.com/in/sawani-weerathunga-507a55348/
